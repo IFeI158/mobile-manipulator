@@ -1,0 +1,89 @@
+
+#include <Servo.h>
+
+// 서보 객체 정의
+Servo servo0;       // 베이스
+Servo servo1a;      // 1번 링크 (정방향)
+Servo servo1b;      // 1번 링크 (역방향, 180 - 입력값)
+Servo servo2;       // 2번 링크
+Servo servo3;       // 3번 링크 (카메라)
+Servo servo4;       // 그리퍼
+
+// 핀 번호 매핑
+const int pin0  = 12;  // 베이스 서보
+const int pin1a = 11;  // 1번 링크 (정방향)
+const int pin1b = 10;  // 1번 링크 (역방향)
+const int pin2  = 9;   // 2번 링크
+const int pin3  = 8;   // 3번 링크
+const int pin4  = 7;   // 그리퍼
+
+// 부드럽게 이동 함수
+void moveSmooth(Servo &sv, int target, int delayMs=15) {
+  int curr = sv.read();
+  if (curr < target) {
+    for (int p = curr; p <= target; p++) {
+      sv.write(p);
+      delay(delayMs);
+    }
+  } else {
+    for (int p = curr; p >= target; p--) {
+      sv.write(p);
+      delay(delayMs);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  // 서보 연결
+  servo0.attach(pin0);
+  servo1a.attach(pin1a);
+  servo1b.attach(pin1b);
+  servo2.attach(pin2);
+  servo3.attach(pin3);
+  servo4.attach(pin4);
+
+  // 초기값 설정
+  servo0.write(90);
+  servo1a.write(90);
+  servo1b.write(90);        // 180 - 90 = 90
+  servo2.write(0);          // 2번 링크는 0도로 초기화
+  servo3.write(90);
+  servo4.write(170);        // 그리퍼 초기값 170도
+}
+
+void loop() {
+  if (!Serial.available()) return;
+
+  String line = Serial.readStringUntil('\n');
+  int vals[4] = {90, 90, 0, 90};
+  int idx = 0, start = 0;
+
+  // 문자열 파싱: s0, s1, s2, s3
+  for (int i = 0; i <= line.length(); i++) {
+    if (i == line.length() || line.charAt(i) == ',') {
+      vals[idx++] = line.substring(start, i).toInt();
+      start = i + 1;
+      if (idx >= 4) break;
+    }
+  }
+
+  // 디버깅 출력
+  Serial.print("Received: ");
+  for (int i = 0; i < 4; i++) {
+    Serial.print(vals[i]);
+    Serial.print(i < 3 ? "," : "\n");
+  }
+
+  // 서보 이동
+  moveSmooth(servo0, vals[0], 15);
+  moveSmooth(servo1a, vals[1], 15);
+  moveSmooth(servo1b, 180 - vals[1], 15);
+  moveSmooth(servo2, vals[2], 15);
+  moveSmooth(servo3, vals[3], 15);
+
+  // 모든 모터 동작이 완료된 후 그리퍼 작동
+  delay(2000);                        // 2초 대기
+  moveSmooth(servo4, 100, 15);       // 그리퍼를 100도로 이동
+}

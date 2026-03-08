@@ -1,0 +1,118 @@
+import math
+import serial
+import time
+
+# === 링크 길이 (단위: cm) ===
+L1 = 20.404
+L2 = 17.617
+L3 = 4.65
+
+# === 베이스 기준 오프셋 ===
+BASE_Z_OFFSET = 7.8  # 베이스 → 첫 관절까지 높이
+
+# --- 초기 기준 각도 ---
+INIT_S1 = 130.0
+INIT_S2 = 0.0
+INIT_S3 = 130.0
+
+# === 초기 자세 기준 오프셋 계산 ===
+def compute_initial_cam_offset():
+    # 링크1 절대 방위: 180° - s1
+    alpha1 = math.radians(180.0 - INIT_S1)
+    # 링크2 절대 방위: s1 + s2 - 90°
+    theta2 = math.radians(INIT_S1 + INIT_S2 - 90.0)
+    # 링크3 절대 방위: theta2 - (s3 - 90°)
+    theta3 = theta2 - math.radians(INIT_S3 - 90.0)
+
+    cam_x = -L1 * math.cos(alpha1) \
+            + L2 * math.cos(theta2) \
+            + L3 * math.cos(theta3)
+    cam_y = 0.0
+    cam_z = BASE_Z_OFFSET \
+            + L1 * math.sin(alpha1) \
+            + L2 * math.sin(theta2) \
+            + L3 * math.sin(theta3)
+    return cam_x, cam_y, cam_z
+
+# === 오프셋 계산 ===
+CAM_OFFSET_X, CAM_OFFSET_Y, CAM_OFFSET_Z = compute_initial_cam_offset()
+
+# === 시리얼 설정 ===
+SERIAL_PORT = '/dev/ttyACM0'
+BAUD_RATE   = 9600
+
+# --- 유틸 함수 ---
+def clamp(val, minimum=0.0, maximum=180.0):
+    """Clamp val between minimum and maximum."""
+    return max(minimum, min(maximum, val))
+
+# --- 역기구학 ---
+def compute_servo_angles(x_cam, y_cam, z_cam):
+    # 1) 카메라 → 베이스 좌표
+    x_b = x_cam + CAM_OFFSET_X
+    y_b = y_cam + CAM_OFFSET_Y
+    z_b = z_cam + CAM_OFFSET_Z
+
+    # 2) 베이스 회전 (s0)
+    if abs(y_b) < 1e-5:
+        s0 = 90.0
+    else:
+        s0 = math.degrees(math.atan2(y_b, x_b)) + 90.0
+    s0 = clamp(s0)
+
+    # 3) 평면 거리 및 보정
+    r  = math.hypot(x_b, y_b)
+    r2 = r - L3
+    z2 = z_b - BASE_Z_OFFSET
+    d  = math.hypot(r2, z2)
+
+    if d > (L1 + L2) or d < abs(L1 - L2):
+        raise ValueError("Target out of reach")
+
+    # 4) s1 (링크1)
+    phi_line = math.atan2(z2, r2)
+    phi_a    = math.acos((L1**2 + d**2 - L2**2) / (2 * L1 * d))
+    phi1     = phi_line + phi_a
+    s1       = clamp(math.degrees(phi1))
+
+    # 5) s2 (링크2)
+    angle_b = math.acos((L1**2 + L2**2 - d**2) / (2 * L1 * L2))
+    s2      = clamp(math.degrees(angle_b) - 90.0)
+
+    # 6) s3 (링크3 보정)
+    s3 = clamp(90 - ((90 - s1) - s2))
+
+    # 반올림 후에도 0–180 범위 유지
+    angles  = [int(round(a)) for a in (s0, s1, s2, s3)]
+    clamped = [int(clamp(a, 0, 180)) for a in angles]
+    return tuple(clamped)
+
+# --- 메인 루프 ---
+def main():
+    print(f"[INFO] 초기 자세 기준 CAM 오프셋:")
+    print(f"CAM_OFFSET_X = {CAM_OFFSET_X:.3f} cm")
+    print(f"CAM_OFFSET_Y = {CAM_OFFSET_Y:.3f} cm")
+    print(f"CAM_OFFSET_Z = {CAM_OFFSET_Z:.3f} cm")
+
+    arduino = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    time.sleep(2)
+
+    print("입력 예시> 10 0 -5    (카메라 기준 x=10cm, y=0cm, z=-5cm)")
+    while True:
+        usr = input("목표 좌표 x y z (cm) 또는 q 입력> ")
+        if usr.lower() == 'q':
+            break
+        try:
+            x_c, y_c, z_c = map(float, usr.split())
+            s0, s1, s2, s3 = compute_servo_angles(x_c, y_c, z_c)
+            print(f"→ s0:{s0}, s1:{s1}, s2:{s2}, s3:{s3}")
+
+            cmd = f"{s0},{s1},{s2},{s3}\n"
+            arduino.write(cmd.encode())
+            time.sleep(0.1)
+
+        except Exception as e:
+            print("오류:", e)
+
+if __name__ == '__main__':
+    main()
